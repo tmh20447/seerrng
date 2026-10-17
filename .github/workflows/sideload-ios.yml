@@ -1,0 +1,67 @@
+# Builds SeerrNG's official iOS app (ios/ in this repo) as an UNSIGNED .ipa
+# for personal sideloading with a free Apple ID (Sideloadly / SideStore / AltStore).
+# Run it from the Actions tab -> "Sideload iOS IPA" -> Run workflow.
+name: Sideload iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      remove_session_cap:
+        description: "Remove the 20-session preview cap (the lifetime unlock can't be purchased in a sideloaded build)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Remove preview session cap (personal build)
+        if: ${{ inputs.remove_session_cap }}
+        run: |
+          set -euo pipefail
+          f=ios/SeerrNG/CappedUsageStore.swift
+          grep -q 'static let freeSessionLimit = 20' "$f"
+          sed -i '' 's/static let freeSessionLimit = 20/static let freeSessionLimit = Int.max/' "$f"
+          grep -n 'freeSessionLimit =' "$f"
+
+      - name: Build for iPhone (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ios/SeerrNG.xcodeproj \
+            -scheme SeerrNG \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package .ipa
+        run: |
+          set -euo pipefail
+          app="build/Build/Products/Release-iphoneos/SeerrNG.app"
+          test -d "$app"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist" 2>/dev/null || echo dev)"
+          mkdir -p out/Payload
+          cp -R "$app" out/Payload/
+          (cd out && zip -qry "SeerrNG-${version}-unsigned.ipa" Payload)
+          ls -lh out/*.ipa
+          shasum -a 256 out/*.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SeerrNG-unsigned-ipa
+          path: out/*.ipa
+          retention-days: 30
